@@ -5,7 +5,7 @@ import logging
 import struct
 from datetime import timedelta
 
-from pymodbus.client import ModbusTcpClient
+from pymodbus.client import AsyncModbusTcpClient
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -37,44 +37,40 @@ class EcoflowCoordinator(DataUpdateCoordinator):
         self.port = port
         self._battery_capacity = battery_capacity
         self._pv_strings = pv_strings
-        self._client: ModbusTcpClient | None = None
+        self._client: AsyncModbusTcpClient = AsyncModbusTcpClient(self.host, port=self.port, timeout=5)
+        self._client.unit_id = 1
+        
 
     # ------------------------------------------------------------------
     # Modbus helpers
     # ------------------------------------------------------------------
 
-    def _disconnect(self) -> None:
-        """Close and discard the current client so the next poll reconnects cleanly."""
-        try:
-            if self._client is not None:
-                self._client.close()
-        except Exception:  # noqa: BLE001
-            pass
-        self._client = None
+    async def async_connect_client(self):
+        await self._client.connect()
 
-    def _get_client(self) -> ModbusTcpClient:
-        if self._client is None or not self._client.connected:
-            self._disconnect()
-            self._client = ModbusTcpClient(self.host, port=self.port, timeout=5)
-            self._client.unit_id = 1
-            if not self._client.connect():
-                raise ConnectionError(f"Modbus TCP connect failed ({self.host}:{self.port})")
-            _LOGGER.debug("Modbus TCP connected to %s:%s", self.host, self.port)
-        return self._client
+        if not self._client.connected:
+            _LOGGER.error("Modbus TCP connected to %s:%s", self.host, self.port)
 
-    def _read_block(self, addr: int, count: int) -> list[int] | None:
+    async def async_reconnect(self) -> None:
+        await self._client.close()
+        await self._client.connect()
+            
+        if not self._client.connected:
+            _LOGGER.error("Modbus TCP connected to %s:%s", self.host, self.port)
+
+    async def _read_block(self, addr: int, count: int) -> list[int] | None:
         """Read *count* holding registers starting at *addr*.  Returns None on error."""
         try:
-            res = self._get_client().read_holding_registers(addr, count=count)
+            res = await self._client.read_holding_registers(addr, count=count)
             if res and not res.isError():
                 _LOGGER.debug("Block 0x%04X(%d): %s", addr, count, res.registers)
                 return res.registers
             # Modbus error response – connection may be stale
-            _LOGGER.debug("Modbus error response at 0x%04X, resetting connection", addr)
-            self._disconnect()
+            _LOGGER.warning("Modbus error response at 0x%04X, resetting connection", addr)
+            self._reconnect()
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("Block read error at 0x%04X: %s – resetting connection", addr, exc)
-            self._disconnect()
+            _LOGGER.error("Block read error at 0x%04X: %s – resetting connection", addr, exc)
+            self._reconnect()
         return None
 
     @staticmethod
@@ -92,22 +88,21 @@ class EcoflowCoordinator(DataUpdateCoordinator):
     # Data fetch
     # ------------------------------------------------------------------
 
-    def _fetch_all(self) -> dict:
+    async def _fetch_all(self) -> dict:
         data: dict = {}
 
         # ── Heartbeat: verify device is reachable before reading all blocks ──
         try:
-            hb = self._get_client().read_holding_registers(REG_STATUS, count=1)
+            hb = await self._client.read_holding_registers(REG_STATUS, count=1)
             if hb is None or hb.isError():
-                raise ConnectionError("Heartbeat register read failed")
+                _LOGGER.error("Heartbeat register read failed")
             _LOGGER.debug("Heartbeat OK (reg %s = %s)", REG_STATUS, hb.registers[0])
         except Exception as exc:
-            _LOGGER.warning("PowerOcean heartbeat failed: %s – will retry next poll", exc)
-            self._disconnect()
+            _LOGGER.error("PowerOcean heartbeat failed: %s – will retry next poll", exc)
             return None
 
         # ── Block A: Serial number + operation mode (40004, 12 regs) ──────────
-        a = self._read_block(_REG_SERIAL, 12)
+        a = await self._read_block(_REG_SERIAL, 12)
         if a:
             # Serial number is ASCII-encoded across registers 0-7 (2 chars each)
             sn = "".join(
@@ -117,7 +112,7 @@ class EcoflowCoordinator(DataUpdateCoordinator):
             data["operation_mode"] = a[9] if len(a) > 9 else None
 
         # ── Block B: Main power values (40519, 34 regs) ──────────────────────
-        b = self._read_block(_REG_MAIN, 30)   # 40519–40548, last needed index = 29
+        b = await self._read_block(_REG_MAIN, 30)   # 40519–40548, last needed index = 29
         if b:
             _LOGGER.debug(
                 "Block B raw (40519+): house=(%04X,%04X) grid=(%04X,%04X) solar=(%04X,%04X) bat=(%04X,%04X)",
@@ -144,14 +139,14 @@ class EcoflowCoordinator(DataUpdateCoordinator):
             data["limit_charge"]      = round(num_modules * 2500)  # 2.5 kW per module
 
         # ── Block C: Battery detail (40574, 6 regs) ───────────────────────────
-        c = self._read_block(_REG_BAT_DETAIL, 6)
+        c = await self._read_block(_REG_BAT_DETAIL, 6)
         if c:
             data["battery_voltage"]     = self._f(c, 0)   # 40574 ✅
             data["battery_current"]     = self._f(c, 2)   # 40576 ✅
             data["battery_temperature"] = self._f(c, 4)   # 40578 – ⚠️ not in verified list
 
         # ── Block D: AC grid + PV strings (40580, 28 regs → up to 40607) ──────
-        d = self._read_block(_REG_AC_PV, 28)
+        d = await self._read_block(_REG_AC_PV, 28)
         if d:
             data["voltage_l1"]           = self._f(d, 0)    # 40580 ✅
             data["voltage_l2"]           = self._f(d, 2)    # 40582 ✅
@@ -196,7 +191,7 @@ class EcoflowCoordinator(DataUpdateCoordinator):
 
         # ── Block E: Energy counters (42161, 100 regs) ────────────────────────
         # Offsets = register_address - 42161
-        e = self._read_block(_REG_ENERGY, 100)
+        e = await self._read_block(_REG_ENERGY, 100)
         if e:
             data["grid_import_total"]    = self._f(e, 0)    # 42161 ✅
             data["grid_import_today"]    = self._f(e, 2)    # 42163 ✅
@@ -236,8 +231,6 @@ class EcoflowCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict:
         try:
-            return await self.hass.async_add_executor_job(self._fetch_all)
+            return await self._fetch_all()
         except Exception as err:  # noqa: BLE001
             raise UpdateFailed(f"Modbus read error: {err}") from err
-        finally:
-            await self.hass.async_add_executor_job(self._disconnect)
