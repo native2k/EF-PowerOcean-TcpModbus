@@ -118,7 +118,6 @@ class EcoflowOptionsFlow(config_entries.OptionsFlow):
                     self._config_entry,
                     data={**self._config_entry.data, "host": host, "port": port},
                 )
-                _LOGGER.debug(f"SCAN_INTERVAL: {user_input[CONF_SCAN_INTERVAL]}")
                 return self.async_create_entry(title="", data={
                     CONF_BATTERY_CAPACITY: user_input[CONF_BATTERY_CAPACITY],
                     CONF_SCAN_INTERVAL: user_input[CONF_SCAN_INTERVAL],
