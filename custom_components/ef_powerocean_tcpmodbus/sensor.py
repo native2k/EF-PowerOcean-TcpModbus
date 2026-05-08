@@ -35,7 +35,7 @@ _LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=False)
 class EcoflowSensorDescription(SensorEntityDescription):
-    pass
+    native_unit_of_measurement: str | None = None
 
 
 VALUE_PRICISION = {
@@ -444,7 +444,7 @@ class EcoflowSensor(CoordinatorEntity[EcoflowCoordinator], RestoreSensor):
 
     def __init__(self, coordinator, description, entry) -> None:
         super().__init__(coordinator)
-        self.entity_description = description
+        self.entity_description: EcoflowSensorDescription = description
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
         self._attr_has_entity_name = True
         self._attr_device_info = DeviceInfo(
@@ -455,6 +455,11 @@ class EcoflowSensor(CoordinatorEntity[EcoflowCoordinator], RestoreSensor):
         )
         self._restored_value: float | int | str | None = None
         self._last_written_value: float | int | str | None = None
+
+        if self.entity_description.native_unit_of_measurement in VALUE_PRICISION:
+            self._attr_suggested_display_precision = VALUE_PRICISION.get(
+                self.entity_description.native_unit_of_measurement
+            )
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -483,9 +488,13 @@ class EcoflowSensor(CoordinatorEntity[EcoflowCoordinator], RestoreSensor):
             value = self.coordinator.data.get(self.entity_description.key, None)
             if value is not None:
                 if precision := VALUE_PRICISION.get(
-                    self.entity_description.unit_of_measurement, None
+                    self.entity_description.native_unit_of_measurement, None
                 ):
-                    return round(value, precision)
+                    return (
+                        round(value, precision)
+                        if precision > 0
+                        else int(round(value, 0))
+                    )
                 else:
                     return value
         _LOGGER.info(
