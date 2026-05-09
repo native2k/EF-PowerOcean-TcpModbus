@@ -152,6 +152,7 @@ class EcoflowCoordinator(DataUpdateCoordinator):
                 _LOGGER.info(
                     f"Heartbeat not OK (reg {REG_STATUS} = {hb[0]}) -> Skip data! Wait 35s"
                 )
+                self._client.close()
                 asyncio.sleep(35)
                 return None
             _LOGGER.debug("Heartbeat OK (reg %s = %s)", REG_STATUS, hb[0])
