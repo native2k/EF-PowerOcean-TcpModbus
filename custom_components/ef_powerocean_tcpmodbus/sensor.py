@@ -114,6 +114,13 @@ SENSORS: list[EcoflowSensorDescription] = [
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
     ),
+
+    EcoflowSensorDescription(
+        key="pv_sum_power", name="Solar Power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
     EcoflowSensorDescription(
         key="pv1_power", name="PV String 1 Power",
         native_unit_of_measurement=UnitOfPower.WATT,

@@ -181,7 +181,7 @@ class EcoflowCoordinator(DataUpdateCoordinator):
             data["pv3_power"] = round(data["pv3_current"] * v_pv_global, 1)
 
             # Solar power: sum of active strings only
-            data["solar_power"] = round(
+            data["pv_sum_power"] = round(
                 sum(data[f"pv{i}_power"] for i in range(1, self._pv_strings + 1)), 1
             )
 
