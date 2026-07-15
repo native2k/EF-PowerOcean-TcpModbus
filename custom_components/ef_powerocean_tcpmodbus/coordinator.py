@@ -175,15 +175,24 @@ class EcoflowCoordinator(DataUpdateCoordinator):
             data["pv2_current"] = _pv_current(self._f(d, 24), 2)   # 40604 ✅
             data["pv3_current"] = _pv_current(self._f(d, 26), 3)   # 40606 ⚠️ not in verified list
 
-            # Calculated PV power per string (current × global PV voltage)
-            data["pv1_power"] = round(data["pv1_current"] * v_pv_global, 1)
-            data["pv2_power"] = round(data["pv2_current"] * v_pv_global, 1)
-            data["pv3_power"] = round(data["pv3_current"] * v_pv_global, 1)
+            pv_sum_current = sum(data[f"pv{i}_current"] for i in range(1, self._pv_strings + 1)) 
+            if data["solar_power"] > 0 and pv_sum_current > 0:
+              
+              # Calculated PV power per string (current × global PV voltage)
+              data["pv1_power"] = round(data["pv1_current"] * data["solar_power"] / pv_sum_current, 1)
+              data["pv2_power"] = round(data["pv2_current"] * data["solar_power"] / pv_sum_current, 1)
+              data["pv3_power"] = round(data["pv3_current"] * data["solar_power"] / pv_sum_current, 1)
 
-            # Solar power: sum of active strings only
-            data["pv_sum_power"] = round(
-                sum(data[f"pv{i}_power"] for i in range(1, self._pv_strings + 1)), 1
-            )
+            else: 
+              # Calculated PV power per string (current × global PV voltage)
+              data["pv1_power"] = round(data["pv1_current"] * v_pv_global, 1)
+              data["pv2_power"] = round(data["pv2_current"] * v_pv_global, 1)
+              data["pv3_power"] = round(data["pv3_current"] * v_pv_global, 1)
+
+              # Solar power: sum of active strings only
+              data["solar_power"] = round(
+                  sum(data[f"pv{i}_power"] for i in range(1, self._pv_strings + 1)), 1
+              )
 
             # Grid power: if register 40521 gave 0, derive from energy balance as fallback
             if data.get("grid_power", 0) == 0.0:
